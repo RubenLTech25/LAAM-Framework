@@ -1,30 +1,73 @@
-import math
 import random
-from typing import Dict, Literal
+from typing import Dict, List, Literal
+from .utils import normalize
 
-def calculate_anchor_decay(initial_weight: float, decay_rate: float, time_elapsed: int) -> float:
-    """
-    Calculates the current weight of an audit anchor after exponential decay.
-    Args:
-        initial_weight: The initial severity weight of the anchor (A₀).
-        decay_rate: The exponential decay rate (λ). Higher values mean faster decay.
-        time_elapsed: The number of audit cycles since the anchor was created (t).
-    Returns:
-        The decayed anchor weight.
-    """
-    return initial_weight * math.exp(-decay_rate * time_elapsed)
+class RegulatedEntity:
+    """Represents Player 1 - The Auditee"""
+    
+    def __init__(self, true_type: str, materiality: float = 1.0):
+        self.true_type = true_type  # 'C', 'R', or 'E'
+        self.materiality = materiality
+        self.audit_history = []
+        
+    def generate_signal(self) -> str:
+        """Entity emits signals based on its true type"""
+        signal_weights = {
+            "C": {"clean": 0.9, "missing_doc": 0.1},
+            "R": {"clean": 0.4, "vague": 0.4, "unsafe_condition": 0.2},
+            "E": {"vague": 0.6, "missing_doc": 0.4}
+        }
+        signals, weights = zip(*signal_weights[self.true_type].items())
+        return random.choices(signals, weights=weights, k=1)[0]
+    
+    def submit_compliance_fix(self, sector: str) -> Dict[str, bool]:
+        """Entity can submit sector-specific evidence to reduce scrutiny"""
+        proofs = {
+            "tax": ["system_upgrade", "accountant_certified"],
+            "healthcare": ["billing_audit", "staff_trained"],
+            "labor": ["safety_training", "equipment_upgrade"]
+        }
+        return {k: True for k in proofs.get(sector, [])}
 
-def normalize(prob_dict: dict) -> dict:
-    """
-    Normalizes a probability dictionary so all values sum to 1.
-    """
-    total = sum(prob_dict.values())
-    return {k: v / total for k, v in prob_dict.items()}
+class Auditor:
+    """Represents Player 2 - The Regulator"""
+    
+    def __init__(self, sector: str, trait: Literal["Grumpy", "Neutral", "Naive"] = "Neutral"):
+        self.sector = sector
+        self.trait = trait
+        self.anchors = []
+        self.fairness_params = {
+            "tax": {"λ": 0.3, "grim_trigger": 5.0},
+            "healthcare": {"λ": 0.5, "grim_trigger": 4.0},
+            "labor": {"λ": 0.2, "grim_trigger": 6.0}
+        }[sector]
+        
+        # Trait bias adjustment
+        self.bias = {"Grumpy": 0.9, "Neutral": 0.5, "Naive": 0.1}[trait]
+        self.fairness_params["λ"] *= self.bias
+        
+        # Initialize Bayesian beliefs
+        self.bayesian_auditor = BayesianAuditor(sector)
+    
+    def add_anchor(self, violation: str, weight: float):
+        """Adds an audit anchor with given weight"""
+        self.anchors.append(weight)
+    
+    def assess_risk(self) -> str:
+        """Assesses risk and returns enforcement strategy"""
+        total_anchor_weight = sum(self.anchors)
+        grim_trigger = self.fairness_params["grim_trigger"]
+        
+        if total_anchor_weight > grim_trigger:
+            return "FULL_SCOPE"
+        elif total_anchor_weight > grim_trigger * 0.5:
+            return "TARGETED_REVIEW"
+        else:
+            return "LIMITED_REVIEW"
 
 class BayesianAuditor:
-    """
-    A class to model the Bayesian belief updating system for an auditor.
-    """
+    """Bayesian belief updating system"""
+    
     def __init__(self, sector: str = 'tax'):
         self.sector_priors = {
             'tax': {'C': 0.6, 'R': 0.3, 'E': 0.1},
@@ -40,11 +83,10 @@ class BayesianAuditor:
         }
 
     def update_beliefs(self, signal: str):
-        """
-        Updates the auditor's beliefs about the auditee's type (C, R, E)
-        using Bayes' Theorem.
-        """
+        """Updates beliefs using Bayes' Theorem"""
         posterior_numerator = {}
         for entity_type in self.beliefs:
-            posterior_numerator[entity_type] = self.signal_likelihood[signal][entity_type] * self.beliefs[entity_type]
+            likelihood = self.signal_likelihood.get(signal, {}).get(entity_type, 0.1)
+            posterior_numerator[entity_type] = likelihood * self.beliefs[entity_type]
+        
         self.beliefs = normalize(posterior_numerator)
